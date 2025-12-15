@@ -147,7 +147,8 @@ def sauvegarder_cotation_supabase(
                 'accessoire_plus': resultat.get('accessoire_plus', 0),
                 'client_info': client_info,
                 'pdf_options_data': pdf_options_data,
-                'pdf_principal_data': pdf_principal_data
+                'pdf_principal_data': pdf_principal_data,
+                'pdf_type_colonnes': st.session_state.get('pdf_type_colonnes', 'unique')
             }
         }
         
@@ -627,8 +628,13 @@ def charger_infos_client(type_couv: str):
 # MODIFICATION 1: Nouvelle fonction de génération PDF
 # ==============================================================================
 
-def generer_pdf_proposition(data_frame: pd.DataFrame, options_data: List[Dict], nb_options: int) -> bytes:
-    """Génère un PDF professionnel complet sur 4 pages."""
+def generer_pdf_proposition(data_frame: pd.DataFrame, options_data: List[Dict], nb_options: int, type_colonnes: str = "option") -> bytes:
+    """
+    Génère un PDF professionnel complet sur 4 pages.
+    
+    Args:
+        type_colonnes: "unique" (1 barème), "college" (différentes personnes), "option" (mêmes personnes, différents barèmes)
+    """
     from reportlab.platypus import Image
     import os
     
@@ -954,20 +960,28 @@ def generer_pdf_proposition(data_frame: pd.DataFrame, options_data: List[Dict], 
     
     table_data = []
     
+    # Déterminer le nom des colonnes selon le type
+    if type_colonnes == "unique":
+        col_labels = ['UNIQUE']
+    elif type_colonnes == "college":
+        col_labels = [f'COLLÈGE {i+1}' for i in range(nb_options)]
+    else:  # "option"
+        col_labels = [f'OPTION {i+1}' for i in range(nb_options)]
+    
     if nb_options == 1:
-        table_data.append(['Désignation', 'OPTION 1'])
+        table_data.append(['Désignation', col_labels[0]])
         col_widths = [8*cm, 7*cm]
     elif nb_options == 2:
-        table_data.append(['Désignation', 'OPTION 1', 'OPTION 2'])
+        table_data.append(['Désignation', col_labels[0], col_labels[1]])
         col_widths = [6*cm, 4.5*cm, 4.5*cm]
     else:
-        table_data.append(['Désignation', 'OPTION 1', 'OPTION 2', 'OPTION 3'])
+        table_data.append(['Désignation'] + col_labels[:3])
         col_widths = [5*cm, 4*cm, 4*cm, 4*cm]
     
     for idx, row in data_frame.iterrows():
         row_data = [str(row['Désignation'])]
         for i in range(nb_options):
-            col_name = f'OPTION {i+1}'
+            col_name = f'OPTION {i+1}'  # Le DataFrame utilise toujours OPTION, seul l'affichage change
             if col_name in row:
                 cell_value = str(row[col_name])
                 if '\n' in cell_value:
@@ -1084,8 +1098,14 @@ def generer_pdf_proposition(data_frame: pd.DataFrame, options_data: List[Dict], 
 # MODIFICATIONS 1 & 2: Fonction generer_recapitulatif_particulier modifiée
 # ==============================================================================
 
-def generer_recapitulatif_particulier(resultats_multi: Dict[int, Dict], baremes_affiches: List[str]):
-    """Génère un récapitulatif comparatif intelligent avec regroupement automatique."""
+def generer_recapitulatif_particulier(resultats_multi: Dict[int, Dict], baremes_affiches: List[str], type_colonnes: str = None):
+    """
+    Génère un récapitulatif comparatif intelligent avec regroupement automatique.
+    
+    Args:
+        type_colonnes: "unique" (1 barème), "college" (différentes personnes), "option" (mêmes personnes)
+                      Si None, déterminé automatiquement selon nb_options
+    """
     from collections import defaultdict
     import uuid
     from datetime import datetime
@@ -1093,7 +1113,10 @@ def generer_recapitulatif_particulier(resultats_multi: Dict[int, Dict], baremes_
     # Récupérer les configurations et infos principales
     configurations_baremes = st.session_state.get('configurations_baremes', {})
     principal_data = st.session_state.get('principal_data', {})
-    trop_percu = st.session_state.get('trop_percu_part_multi', 0.0)
+    # Récupérer le trop perçu (multi ou single)
+    trop_percu_multi = st.session_state.get('trop_percu_part_multi', 0.0)
+    trop_percu_single = st.session_state.get('trop_percu_single', 0.0)
+    trop_percu = trop_percu_multi if trop_percu_multi > 0 else trop_percu_single
     
     # === REGROUPEMENT INTELLIGENT ===
     # Grouper par (produit_name, type_couverture)
@@ -1192,10 +1215,15 @@ def generer_recapitulatif_particulier(resultats_multi: Dict[int, Dict], baremes_
         taxes = [item['resultat']['taxe'] for item in items]
         primes_ttc = [item['resultat']['prime_ttc_totale'] for item in items]
         
+        # Ajouter le trop perçu aux accessoires (réparti sur le premier item ou total)
+        accessoires_avec_trop_percu = accessoires.copy()
+        if trop_percu > 0 and len(accessoires_avec_trop_percu) > 0:
+            accessoires_avec_trop_percu[0] = accessoires_avec_trop_percu[0] + trop_percu
+        
         # Prime nette annuelle totale
         prime_nette_annuelle_totale = sum(primes_nettes) + sum(surprimes_affection) + sum(surprimes_grossesse)
         
-        # Montant total = Prime TTC + Trop perçu
+        # Montant total = Prime TTC + Trop perçu (car accessoires augmentés)
         montant_total = sum(primes_ttc) + trop_percu
         
         options_data.append({
@@ -1211,10 +1239,9 @@ def generer_recapitulatif_particulier(resultats_multi: Dict[int, Dict], baremes_
             'prime_totale_couverture_deces': format_avec_detail(primes_lsp),
             'assistance_psychologique': format_avec_detail(primes_assist_psy),
             'prime_nette_annuelle_totale': format_currency(prime_nette_annuelle_totale),
-            'accessoires': format_avec_detail(accessoires),
+            'accessoires': format_avec_detail(accessoires_avec_trop_percu),
             'taxes': format_currency(sum(taxes)),
-            'prime_ttc_annuelle': format_currency(sum(primes_ttc)),
-            'trop_percu': format_currency(trop_percu) if trop_percu > 0 else "0 FCFA",
+            'prime_ttc_annuelle': format_currency(sum(primes_ttc) + trop_percu),
             'montant_total': format_currency(montant_total)
         })
     
@@ -1236,7 +1263,6 @@ def generer_recapitulatif_particulier(resultats_multi: Dict[int, Dict], baremes_
         'ACCESSOIRES',
         'TAXES',
         'PRIME TTC ANNUELLE',
-        'TROP PERÇU',
         'MONTANT TOTAL À PAYER'
     ]
     
@@ -1261,16 +1287,32 @@ def generer_recapitulatif_particulier(resultats_multi: Dict[int, Dict], baremes_
             options_data[i]['accessoires'], 
             options_data[i]['taxes'], 
             options_data[i]['prime_ttc_annuelle'],
-            options_data[i]['trop_percu'],
             options_data[i]['montant_total']
         ]
         df_dict[f'OPTION {i+1}'] = option_values
     
     data_frame = pd.DataFrame(df_dict)
     
-    pdf_bytes = generer_pdf_proposition(data_frame, options_data, nb_options)
+    # Déterminer le type de colonnes automatiquement si non spécifié
+    if type_colonnes is None:
+        if nb_options == 1:
+            type_colonnes = "unique"
+        else:
+            # Par défaut, "option" pour plusieurs barèmes
+            type_colonnes = "option"
     
-    st.success(f"✅ Proposition commerciale générée avec succès ({nb_options} option{'s' if nb_options > 1 else ''}) !")
+    # Stocker le type pour le téléchargement ultérieur
+    st.session_state['pdf_type_colonnes'] = type_colonnes
+    
+    pdf_bytes = generer_pdf_proposition(data_frame, options_data, nb_options, type_colonnes)
+    
+    # Message adapté selon le type
+    if type_colonnes == "unique":
+        st.success("✅ Proposition commerciale générée !")
+    elif type_colonnes == "college":
+        st.success(f"✅ Proposition commerciale générée ({nb_options} collège{'s' if nb_options > 1 else ''}) !")
+    else:
+        st.success(f"✅ Proposition commerciale générée ({nb_options} option{'s' if nb_options > 1 else ''}) !")
     
     # Stocker les données PDF dans session_state pour sauvegarde ultérieure
     st.session_state['pdf_options_data'] = options_data
@@ -1345,6 +1387,231 @@ def generer_recapitulatif_particulier(resultats_multi: Dict[int, Dict], baremes_
                         st.error(f"❌ Erreur: {str(e)}")
                         import traceback
                         st.code(traceback.format_exc())
+
+
+# ==============================================================================
+# FONCTION DE GÉNÉRATION RÉCAPITULATIF CORPORATE
+# ==============================================================================
+
+def generer_recapitulatif_corporate(resultats: Dict, nom_entreprise: str = "", type_colonnes: str = "college"):
+    """
+    Génère un récapitulatif PDF pour le parcours Corporate.
+    Utilise le même format que le Particulier.
+    
+    Args:
+        resultats: Dict avec les formules et totaux
+        nom_entreprise: Nom de l'entreprise
+        type_colonnes: "unique" (1 formule), "college" (plusieurs formules/collèges)
+    """
+    from datetime import datetime
+    
+    formules = resultats.get('formules', [])
+    nb_options = len(formules)
+    
+    if nb_options == 0:
+        st.warning("⚠️ Aucune formule à afficher")
+        return
+    
+    # Déterminer automatiquement le type de colonnes
+    if type_colonnes is None:
+        type_colonnes = "unique" if nb_options == 1 else "college"
+    
+    # Construire les options_data pour chaque formule
+    options_data = []
+    
+    for formule in formules:
+        # Extraire les données de la formule
+        produit_name = formule.get('produit_name', 'N/A')
+        produit_key = formule.get('produit_key', '')
+        
+        # Récupérer les plafonds depuis les tarifs ou les valeurs saisies (barème spécial)
+        plafond_pers = 'N/A'
+        plafond_famille = 'N/A'
+        garantie = 'N/A'
+        
+        if produit_key == 'bareme_special':
+            # Utiliser les plafonds saisis manuellement
+            plafond_pers_val = formule.get('plafond_pers_special', 0)
+            plafond_fam_val = formule.get('plafond_fam_special', 0)
+            plafond_pers = format_currency(plafond_pers_val) if plafond_pers_val > 0 else 'N/A'
+            plafond_famille = format_currency(plafond_fam_val) if plafond_fam_val > 0 else 'N/A'
+            garantie = 'Barème Spécial'
+        elif produit_key:
+            tarif_info = TARIFS_CORPORATE.get(produit_key, {})
+            if tarif_info:
+                garantie = tarif_info.get('type', 'N/A')
+                # Récupérer les vrais plafonds depuis les tarifs (clés: plafond_personne, plafond_famille)
+                plafond_pers_val = tarif_info.get('plafond_personne', 0)
+                plafond_fam_val = tarif_info.get('plafond_famille', 0)
+                plafond_pers = format_currency(plafond_pers_val) if plafond_pers_val > 0 else 'N/A'
+                plafond_famille = format_currency(plafond_fam_val) if plafond_fam_val > 0 else 'N/A'
+        
+        # Effectifs détaillés
+        nb_familles = formule.get('nb_familles', 0)
+        nb_personnes = formule.get('nb_personnes', 0) or formule.get('nb_seuls', 0)
+        nb_enfants_supp = formule.get('nb_enfants_supp', 0)
+        
+        # Primes
+        prime_nette = formule.get('prime_nette_finale', 0) or formule.get('prime_nette_base', 0)
+        accessoires = formule.get('accessoires', 0)
+        taxe = formule.get('taxe', 0)
+        prime_ttc = formule.get('prime_ttc_totale', 0)
+        prime_lsp = formule.get('prime_lsp', 0)
+        prime_assist_psy = formule.get('prime_assist_psy', 0)
+        
+        options_data.append({
+            'plafond_annuel_pers': plafond_pers if plafond_pers != 'N/A' else format_currency(0),
+            'plafond_annuel_famille': plafond_famille if plafond_famille != 'N/A' else format_currency(0),
+            'garanties': garantie,
+            'type_proposition': formule.get('nom_formule', f'Formule {len(options_data)+1}'),
+            'nb_familles': str(nb_familles),
+            'nb_personnes_seules': str(nb_personnes),
+            'enfants_supp': str(nb_enfants_supp),
+            'prime_nette_personne': format_currency(prime_nette),
+            'surprime_affection': '0 FCFA',
+            'surprime_grossesse': '0 FCFA',
+            'prime_totale_couverture_deces': format_currency(prime_lsp),
+            'assistance_psychologique': format_currency(prime_assist_psy),
+            'prime_nette_annuelle_totale': format_currency(prime_nette),
+            'accessoires': format_currency(accessoires),
+            'taxes': format_currency(taxe),
+            'prime_ttc_annuelle': format_currency(prime_ttc),
+            'montant_total': format_currency(prime_ttc)
+        })
+    
+    # Construire le DataFrame
+    designations = [
+        'PLAFOND ANNUEL / PERS',
+        'PLAFOND ANNUEL / FAM',
+        'GESTIONNAIRE', 
+        'TERRITORIALITÉ', 
+        'GARANTIES', 
+        'TYPE DE PROPOSITION', 
+        'NOMBRE DE FAMILLES',
+        'NOMBRE DE PERSONNES SEULES',
+        'ENFANTS SUPPLÉMENTAIRES',
+        'PRIME NETTE / PERSONNE',
+        'SURPRIME AFFECTION',
+        'SURPRIME GROSSESSE',
+        'PRIME TOTALE LSP',
+        'PRIME ASSISTANCE PSY',
+        'PRIME NETTE TOTALE',
+        'ACCESSOIRES',
+        'TAXES',
+        'PRIME TTC ANNUELLE',
+        'MONTANT TOTAL À PAYER'
+    ]
+    
+    df_dict = {'Désignation': designations}
+    
+    for i in range(nb_options):
+        option_values = [
+            options_data[i]['plafond_annuel_pers'],
+            options_data[i]['plafond_annuel_famille'],
+            'ANKARA SERVICE',
+            "COTE D'IVOIRE",
+            options_data[i]['garanties'],
+            options_data[i]['type_proposition'],
+            options_data[i]['nb_familles'],
+            options_data[i]['nb_personnes_seules'],
+            options_data[i]['enfants_supp'],
+            options_data[i]['prime_nette_personne'],
+            options_data[i]['surprime_affection'],
+            options_data[i]['surprime_grossesse'],
+            options_data[i]['prime_totale_couverture_deces'],
+            options_data[i]['assistance_psychologique'],
+            options_data[i]['prime_nette_annuelle_totale'],
+            options_data[i]['accessoires'],
+            options_data[i]['taxes'],
+            options_data[i]['prime_ttc_annuelle'],
+            options_data[i]['montant_total']
+        ]
+        df_dict[f'OPTION {i+1}'] = option_values
+    
+    data_frame = pd.DataFrame(df_dict)
+    
+    # Stocker le principal_data avec le nom de l'entreprise
+    st.session_state['principal_data_corp'] = {'prospect': nom_entreprise, 'type': 'Corporate'}
+    st.session_state['pdf_options_data_corp'] = options_data
+    st.session_state['pdf_type_colonnes_corp'] = type_colonnes
+    
+    # Générer le PDF
+    pdf_bytes = generer_pdf_proposition(data_frame, options_data, nb_options, type_colonnes)
+    
+    # Stocker le PDF pour téléchargement
+    st.session_state['pdf_bytes_generated_corp'] = pdf_bytes
+    st.session_state['proposition_generee_corp'] = True
+    
+    # Message de succès
+    if type_colonnes == "unique":
+        st.success("✅ Proposition UNIQUE générée !")
+    else:
+        st.success(f"✅ Proposition générée avec {nb_options} COLLÈGE(S) !")
+    
+    # Boutons de téléchargement et sauvegarde
+    st.markdown("---")
+    col_dl, col_save = st.columns(2)
+    
+    with col_dl:
+        st.download_button(
+            label="📥 TÉLÉCHARGER LA PROPOSITION (PDF)",
+            data=pdf_bytes,
+            file_name=f"Proposition_Corporate_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+            mime="application/pdf",
+            type="primary",
+            use_container_width=True,
+            key="btn_dl_corp_pdf"
+        )
+    
+    with col_save:
+        if st.session_state.db_manager is not None:
+            if st.button("💾 ENREGISTRER AVEC PDF", type="secondary", use_container_width=True, key="btn_save_corp_pdf"):
+                try:
+                    import base64
+                    pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+                    
+                    # Sauvegarder pour chaque formule
+                    nb_saved = 0
+                    for formule in formules:
+                        client_info = {
+                            'nom': nom_entreprise,
+                            'prenom': '',
+                            'type_couverture': 'Corporate',
+                            'nb_adultes': formule.get('nb_familles', 0) + formule.get('nb_personnes', 0),
+                            'nb_enfants': 0
+                        }
+                        
+                        success = sauvegarder_cotation_supabase(
+                            type_marche="Corporate",
+                            produit=formule.get('produit_name', 'N/A'),
+                            resultat={
+                                'prime_nette_finale': formule.get('prime_nette_finale', 0),
+                                'accessoires': formule.get('accessoires', 0),
+                                'taxe': formule.get('taxe', 0),
+                                'prime_ttc_totale': formule.get('prime_ttc_totale', 0),
+                                'prime_lsp': formule.get('prime_lsp', 0),
+                                'prime_assist_psy': formule.get('prime_assist_psy', 0)
+                            },
+                            client_info=client_info,
+                            duree_contrat=resultats.get('duree_contrat', 12),
+                            reduction_commerciale=resultats.get('reduction_commerciale', 0),
+                            pdf_options_data=options_data,
+                            pdf_principal_data={'prospect': nom_entreprise, 'type': 'Corporate'},
+                            pdf_bytes=pdf_bytes
+                        )
+                        
+                        if success:
+                            nb_saved += 1
+                    
+                    if nb_saved > 0:
+                        st.balloons()
+                        st.success(f"✅ {nb_saved} cotation(s) Corporate enregistrée(s) avec le PDF !")
+                        
+                except Exception as e:
+                    st.error(f"❌ Erreur: {str(e)}")
+        else:
+            st.warning("⚠️ Base de données non disponible")
+
 
 # --- 3. INTERFACE STREAMLIT ---
 
@@ -1794,7 +2061,7 @@ with tab_cotation:
                                             'TERRITORIALITÉ', 'GARANTIES', 'TYPE DE PROPOSITION', 'POPULATION', 
                                             'PRIME NETTE / PERSONNE', 'SURPRIME AFFECTION', 'SURPRIME GROSSESSE',
                                             'PRIME TOTALE LSP', 'PRIME ASSISTANCE PSY', 'PRIME NETTE TOTALE',
-                                            'ACCESSOIRES', 'TAXES', 'PRIME TTC ANNUELLE', 'TROP PERÇU', 'MONTANT TOTAL À PAYER'
+                                            'ACCESSOIRES', 'TAXES', 'PRIME TTC ANNUELLE', 'MONTANT TOTAL À PAYER'
                                         ]
                                         
                                         nb_options = len(pdf_options_data)
@@ -1818,13 +2085,15 @@ with tab_cotation:
                                                 opt.get('accessoires', '0 FCFA'),
                                                 opt.get('taxes', '0 FCFA'),
                                                 opt.get('prime_ttc_annuelle', '0 FCFA'),
-                                                opt.get('trop_percu', '0 FCFA'),
                                                 opt.get('montant_total', '0 FCFA')
                                             ]
                                             df_dict[f'OPTION {i+1}'] = option_values
                                         
                                         data_frame = pd.DataFrame(df_dict)
-                                        pdf_bytes = generer_pdf_proposition(data_frame, pdf_options_data, nb_options)
+                                        
+                                        # Récupérer le type de colonnes (par défaut selon nb_options)
+                                        type_colonnes_stored = details.get('pdf_type_colonnes', 'unique' if nb_options == 1 else 'option')
+                                        pdf_bytes = generer_pdf_proposition(data_frame, pdf_options_data, nb_options, type_colonnes_stored)
                                         
                                         st.download_button(
                                             "⬇️ Télécharger (régénéré)",
@@ -3232,7 +3501,7 @@ with tab_cotation:
                                 'surprime_risques_montant': sum(resultats_multi[idx]['resultat'].get('surprime_risques_montant', 0) for idx in resultats_multi),
                             }
                             bareme_name = f"COMBINÉ ({len(baremes_affiches)} barèmes)"
-                            generer_recapitulatif_particulier({0: {'resultat': resultat_combine}}, [bareme_name])
+                            generer_recapitulatif_particulier({0: {'resultat': resultat_combine}}, [bareme_name], type_colonnes="unique")
                     
                     elif len(baremes_affiches) == 1:
                         # Stocker les résultats pour persistence
@@ -3250,11 +3519,44 @@ with tab_cotation:
                             TAUX_TAXE_PARTICULIER
                         )
                         
+                        # Champ Trop perçu
+                        st.markdown("---")
+                        st.markdown("### 💰 Trop Perçu (Optionnel)")
+                        col_tp1, col_tp2 = st.columns([3, 1])
+                        
+                        trop_percu_single = col_tp1.number_input(
+                            "Montant du trop perçu (FCFA)",
+                            min_value=0.0,
+                            value=0.0,
+                            step=1000.0,
+                            key="trop_percu_part_single",
+                            help="Ce montant sera ajouté aux accessoires"
+                        )
+                        
+                        if trop_percu_single > 0:
+                            col_tp2.metric("Ajouté aux accessoires", f"{int(trop_percu_single):,} FCFA".replace(',', ' '))
+                        
+                        # Upload image du barème
+                        st.markdown("---")
+                        st.markdown("### 📸 Image du Barème (Page 4)")
+                        bareme_image_single = st.file_uploader(
+                            "Joindre l'image du barème de remboursement",
+                            type=['png', 'jpg', 'jpeg'],
+                            key="bareme_image_upload_single",
+                            help="Cette image apparaîtra en page 4 du PDF"
+                        )
+                        
+                        if bareme_image_single:
+                            st.success(f"✅ Image chargée : {bareme_image_single.name}")
+                            st.session_state['bareme_image_bytes'] = bareme_image_single.read()
+                            bareme_image_single.seek(0)
+                        
                         # Bouton de génération du récapitulatif pour option unique
                         st.markdown("---")
                         if st.button("📝 GÉNÉRER PROPOSITION COMMERCIALE", key="btn_generer_prop_simple", type="secondary"):
                             st.session_state['proposition_generee'] = True
-                            generer_recapitulatif_particulier(resultats_multi, baremes_affiches)
+                            st.session_state['trop_percu_single'] = trop_percu_single
+                            generer_recapitulatif_particulier(resultats_multi, baremes_affiches, type_colonnes="unique")
                         
                         # Afficher les boutons si la proposition a déjà été générée (persistence)
                         if st.session_state.get('proposition_generee') and st.session_state.get('pdf_bytes_generated'):
@@ -3583,11 +3885,11 @@ with tab_cotation:
                             value=0.0,
                             step=1000.0,
                             key="trop_percu_part_multi",
-                            help="Montant à ajouter à la prime TTC (non taxé)"
+                            help="Ce montant sera ajouté aux accessoires"
                         )
                         
                         if trop_percu > 0:
-                            col_tp2.metric("Trop perçu", f"{format_currency(trop_percu)}", delta="Non taxé")
+                            col_tp2.metric("Ajouté aux accessoires", f"{format_currency(trop_percu)}")
                         
                         st.markdown("---")
                         
@@ -3607,8 +3909,20 @@ with tab_cotation:
                             bareme_image.seek(0)  # Reset pour réutilisation
                         
                         st.markdown("---")
+                        # Déterminer le type de colonnes selon le mode d'offre choisi
+                        type_offre_choisi = st.session_state.get('type_offre_final', 'Offres Distinctes (Comparaison)')
+                        
+                        if len(baremes_affiches) == 1:
+                            type_colonnes_pdf = "unique"
+                        elif type_offre_choisi == "Offre Combinée (Prime Totale)":
+                            # Plusieurs personnes différentes regroupées
+                            type_colonnes_pdf = "college"
+                        else:
+                            # Mêmes personnes, différents barèmes pour comparaison
+                            type_colonnes_pdf = "option"
+                        
                         if st.button("📝 GÉNÉRER LA PROPOSITION COMMERCIALE", key="btn_generer_prop", type="secondary", use_container_width=True):
-                            generer_recapitulatif_particulier(resultats_multi, baremes_affiches)
+                            generer_recapitulatif_particulier(resultats_multi, baremes_affiches, type_colonnes=type_colonnes_pdf)
                         
                         # === BOUTON SAUVEGARDE SUPABASE ===
                         st.markdown("---")
@@ -3720,9 +4034,32 @@ with tab_cotation:
                         help="Sélectionnez le produit pour cette formule"
                     )
                     
-                    # Afficher un message pour le barème spécial
+                    # Afficher un message et champs pour le barème spécial
+                    plafond_pers_special = 0
+                    plafond_fam_special = 0
                     if produit_formule == 'bareme_special':
-                        st.info("💼 **BARÈME SPÉCIAL** : Vous devrez saisir manuellement la prime nette avant le calcul.")
+                        st.info("💼 **BARÈME SPÉCIAL** : Vous devrez saisir manuellement les plafonds et la prime nette.")
+                        
+                        st.markdown("**Plafonds du Barème Spécial**")
+                        col_plaf1, col_plaf2 = st.columns(2)
+                        
+                        plafond_pers_special = col_plaf1.number_input(
+                            "PLAFOND ANNUEL / PERS (FCFA)",
+                            min_value=0,
+                            value=0,
+                            step=100000,
+                            key=f"plafond_pers_special_{i}",
+                            help="Plafond annuel par personne"
+                        )
+                        
+                        plafond_fam_special = col_plaf2.number_input(
+                            "PLAFOND ANNUEL / FAM (FCFA)",
+                            min_value=0,
+                            value=0,
+                            step=100000,
+                            key=f"plafond_fam_special_{i}",
+                            help="Plafond annuel par famille"
+                        )
                     
                     # Nom de la formule (optionnel)
                     nom_formule = col_form2.text_input(
@@ -3824,7 +4161,9 @@ with tab_cotation:
                                     'prime_nette_manuelle': prime_formule,
                                     'accessoires_manuels': accessoires_formule,
                                     'prime_lsp_manuelle': prime_lsp_formule,
-                                    'prime_assist_psy_manuelle': prime_assist_psy_formule
+                                    'prime_assist_psy_manuelle': prime_assist_psy_formule,
+                                    'plafond_pers_special': plafond_pers_special,
+                                    'plafond_fam_special': plafond_fam_special
                                 })
                         else:
                             # Calcul normal avec barème prédéfini
@@ -3927,6 +4266,14 @@ with tab_cotation:
                                 
                                 resultat['nom_formule'] = formule['nom']
                                 resultat['produit_name'] = PRODUITS_CORPORATE_UI[formule['produit_key']]
+                                resultat['produit_key'] = formule['produit_key']
+                                # Ajouter les effectifs détaillés
+                                resultat['nb_familles'] = formule['nb_familles']
+                                resultat['nb_seuls'] = formule['nb_seuls']
+                                resultat['nb_enfants_supp'] = formule['nb_enfants_supp']
+                                # Ajouter les plafonds pour barème spécial
+                                resultat['plafond_pers_special'] = formule.get('plafond_pers_special', 0)
+                                resultat['plafond_fam_special'] = formule.get('plafond_fam_special', 0)
                                 resultats_formules.append(resultat)
                                 
                                 prime_nette_totale += resultat['prime_nette_finale'] 
@@ -4096,6 +4443,87 @@ with tab_cotation:
                         "⚠️ Cette estimation ne constitue pas une offre ferme. "
                         "Passez au **Workflow Excel** pour obtenir un devis définitif avec micro-tarification."
                     )
+                    
+                    # === GÉNÉRATION PDF CORPORATE ===
+                    st.markdown("---")
+                    st.markdown("### 📄 Proposition Commerciale")
+                    
+                    nom_entreprise_rapide = st.text_input(
+                        "Nom de l'entreprise (pour le PDF)",
+                        placeholder="Ex: ENTREPRISE XYZ",
+                        key="nom_entreprise_rapide_pdf"
+                    )
+                    
+                    col_gen_pdf = st.columns([1, 1, 1])
+                    with col_gen_pdf[1]:
+                        if st.button("📝 GÉNÉRER LA PROPOSITION PDF", key="btn_gen_pdf_corp_rapide", type="secondary", use_container_width=True):
+                            type_col = "unique" if len(resultats['formules']) == 1 else "college"
+                            generer_recapitulatif_corporate(resultats, nom_entreprise_rapide, type_colonnes=type_col)
+                    
+                    # Afficher les boutons si la proposition a déjà été générée
+                    if st.session_state.get('proposition_generee_corp') and st.session_state.get('pdf_bytes_generated_corp'):
+                        st.markdown("---")
+                        col_dl_corp, col_save_corp = st.columns(2)
+                        
+                        with col_dl_corp:
+                            st.download_button(
+                                label="📥 TÉLÉCHARGER LE PDF",
+                                data=st.session_state['pdf_bytes_generated_corp'],
+                                file_name=f"Proposition_Corporate_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                                mime="application/pdf",
+                                type="primary",
+                                use_container_width=True,
+                                key="dl_btn_corp_persist"
+                            )
+                        
+                        with col_save_corp:
+                            if st.session_state.db_manager is not None:
+                                if st.button("💾 ENREGISTRER AVEC PDF", type="secondary", use_container_width=True, key="btn_save_corp_persist"):
+                                    try:
+                                        import base64
+                                        pdf_bytes_corp = st.session_state['pdf_bytes_generated_corp']
+                                        pdf_base64 = base64.b64encode(pdf_bytes_corp).decode('utf-8')
+                                        
+                                        nb_saved = 0
+                                        for formule in resultats['formules']:
+                                            client_info = {
+                                                'nom': nom_entreprise_rapide,
+                                                'prenom': '',
+                                                'type_couverture': 'Corporate',
+                                                'nb_adultes': formule.get('nb_familles', 0) + formule.get('nb_personnes', 0),
+                                                'nb_enfants': 0
+                                            }
+                                            
+                                            success = sauvegarder_cotation_supabase(
+                                                type_marche="Corporate",
+                                                produit=formule.get('produit_name', 'N/A'),
+                                                resultat={
+                                                    'prime_nette_finale': formule.get('prime_nette_finale', 0),
+                                                    'accessoires': formule.get('accessoires', 0),
+                                                    'taxe': formule.get('taxe', 0),
+                                                    'prime_ttc_totale': formule.get('prime_ttc_totale', 0),
+                                                    'prime_lsp': formule.get('prime_lsp', 0),
+                                                    'prime_assist_psy': formule.get('prime_assist_psy', 0)
+                                                },
+                                                client_info=client_info,
+                                                duree_contrat=resultats.get('duree_contrat', 12),
+                                                reduction_commerciale=resultats.get('reduction_commerciale', 0),
+                                                pdf_options_data=st.session_state.get('pdf_options_data_corp', []),
+                                                pdf_principal_data={'prospect': nom_entreprise_rapide, 'type': 'Corporate'},
+                                                pdf_bytes=pdf_bytes_corp
+                                            )
+                                            
+                                            if success:
+                                                nb_saved += 1
+                                        
+                                        if nb_saved > 0:
+                                            st.balloons()
+                                            st.success(f"✅ {nb_saved} cotation(s) Corporate enregistrée(s) avec le PDF !")
+                                            
+                                    except Exception as e:
+                                        st.error(f"❌ Erreur: {str(e)}")
+                            else:
+                                st.warning("⚠️ Base de données non disponible")
         
     
     
@@ -4483,3 +4911,95 @@ with tab_cotation:
                                     """
                                 
                                 st.markdown(recap_text)
+                            
+                            # === GÉNÉRATION PDF CORPORATE EXCEL ===
+                            st.markdown("---")
+                            st.markdown("### 📄 Proposition Commerciale")
+                            
+                            col_gen_pdf_excel = st.columns([1, 1, 1])
+                            with col_gen_pdf_excel[1]:
+                                if st.button("📝 GÉNÉRER LA PROPOSITION PDF", key="btn_gen_pdf_corp_excel", type="secondary", use_container_width=True):
+                                    # Construire les données pour le PDF
+                                    resultats_excel = {
+                                        'formules': [{
+                                            'produit_key': produit_key_corp,
+                                            'produit_name': PRODUITS_CORPORATE_UI[produit_key_corp],
+                                            'nom_formule': 'Formule Principale',
+                                            'nb_familles': resultat_micro.get('nb_eligibles', 0),
+                                            'nb_seuls': 0,
+                                            'nb_enfants_supp': 0,
+                                            'plafond_pers_special': 0,
+                                            'plafond_fam_special': 0,
+                                            'prime_nette_finale': resultat_micro.get('prime_nette_totale', 0),
+                                            'accessoires': resultat_micro.get('accessoires', 0),
+                                            'taxe': resultat_micro.get('taxe', 0),
+                                            'prime_ttc_totale': prime_finale_display,
+                                            'prime_lsp': resultat_micro.get('services', 0) / 2,
+                                            'prime_assist_psy': resultat_micro.get('services', 0) / 2
+                                        }],
+                                        'prime_nette_totale': resultat_micro.get('prime_nette_totale', 0),
+                                        'prime_ttc_totale': resultat_micro.get('prime_ttc_totale', 0),
+                                        'reduction_commerciale': reduction_finale,
+                                        'prime_ttc_finale': prime_finale_display,
+                                        'duree_contrat': duree_contrat_excel
+                                    }
+                                    generer_recapitulatif_corporate(resultats_excel, nom_entreprise, type_colonnes="unique")
+                            
+                            # Afficher les boutons si la proposition a déjà été générée
+                            if st.session_state.get('proposition_generee_corp') and st.session_state.get('pdf_bytes_generated_corp'):
+                                st.markdown("---")
+                                col_dl_excel, col_save_excel = st.columns(2)
+                                
+                                with col_dl_excel:
+                                    st.download_button(
+                                        label="📥 TÉLÉCHARGER LE PDF",
+                                        data=st.session_state['pdf_bytes_generated_corp'],
+                                        file_name=f"Proposition_Corporate_Excel_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                                        mime="application/pdf",
+                                        type="primary",
+                                        use_container_width=True,
+                                        key="dl_btn_corp_excel_persist"
+                                    )
+                                
+                                with col_save_excel:
+                                    if st.session_state.db_manager is not None:
+                                        if st.button("💾 ENREGISTRER AVEC PDF", type="secondary", use_container_width=True, key="btn_save_corp_excel_persist"):
+                                            try:
+                                                import base64
+                                                pdf_bytes_corp = st.session_state['pdf_bytes_generated_corp']
+                                                
+                                                client_info = {
+                                                    'nom': nom_entreprise,
+                                                    'prenom': '',
+                                                    'type_couverture': 'Corporate',
+                                                    'nb_adultes': resultat_micro.get('nb_eligibles', 0),
+                                                    'nb_enfants': 0
+                                                }
+                                                
+                                                success = sauvegarder_cotation_supabase(
+                                                    type_marche="Corporate",
+                                                    produit=PRODUITS_CORPORATE_UI[produit_key_corp],
+                                                    resultat={
+                                                        'prime_nette_finale': resultat_micro.get('prime_nette_totale', 0),
+                                                        'accessoires': resultat_micro.get('accessoires', 0),
+                                                        'taxe': resultat_micro.get('taxe', 0),
+                                                        'prime_ttc_totale': prime_finale_display,
+                                                        'prime_lsp': resultat_micro.get('services', 0) / 2,
+                                                        'prime_assist_psy': resultat_micro.get('services', 0) / 2
+                                                    },
+                                                    client_info=client_info,
+                                                    duree_contrat=duree_contrat_excel,
+                                                    reduction_commerciale=reduction_finale,
+                                                    pdf_options_data=st.session_state.get('pdf_options_data_corp', []),
+                                                    pdf_principal_data={'prospect': nom_entreprise, 'type': 'Corporate'},
+                                                    pdf_bytes=pdf_bytes_corp
+                                                )
+                                                
+                                                if success:
+                                                    st.balloons()
+                                                    st.success("✅ Cotation Corporate enregistrée avec le PDF !")
+                                                    
+                                            except Exception as e:
+                                                st.error(f"❌ Erreur: {str(e)}")
+                                    else:
+                                        st.warning("⚠️ Base de données non disponible")
