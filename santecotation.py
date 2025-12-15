@@ -3277,7 +3277,7 @@ with tab_cotation:
             # Champ Accessoire + (frais supplémentaires)
             with st.container(border=True):
                 accessoire_plus = st.number_input(
-                    "Accessoire + (FCFA)",
+                    "Trop perçu + (FCFA)",
                     min_value=0.0,
                     value=0.0,
                     step=1000.0,
@@ -4226,7 +4226,7 @@ with tab_cotation:
                     
                     # Champ Accessoire + (frais supplémentaires)
                     accessoire_plus_corp = st.number_input(
-                        "Accessoire + (FCFA)",
+                        "Trop perçu + (FCFA)",
                         min_value=0.0,
                         value=0.0,
                         step=1000.0,
