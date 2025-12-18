@@ -848,11 +848,18 @@ def generer_pdf_proposition(data_frame: pd.DataFrame, options_data: List[Dict], 
     elements.append(header_table)
     elements.append(Spacer(1, 0.3*cm))  # Réduire l'espace
     
-    # En-tête avec références
+    # En-tête avec références - Vérifier si c'est Corporate ou Particulier
     ref_data = st.session_state.get('principal_data', {})
+    # Pour Corporate, utiliser principal_data_corp qui contient le nom de l'entreprise et l'apporteur
+    ref_data_corp = st.session_state.get('principal_data_corp', {})
+    
+    # Si on a des données Corporate, les utiliser pour le prospect et l'apporteur
+    prospect_value = ref_data_corp.get('prospect', '') if ref_data_corp.get('prospect') else ref_data.get('prospect', '')
+    apporteur_value = ref_data_corp.get('apporteur', '') if ref_data_corp.get('apporteur') else ref_data.get('apporteur', '')
+    
     ref_table_data = [
-        ['REFERENCE:', ref_data.get('reference', ''), 'APPORTEUR:', ref_data.get('apporteur', '')],
-        ['PROSPECT:', ref_data.get('prospect', ''), '', '']
+        ['REFERENCE:', ref_data.get('reference', ''), 'APPORTEUR:', apporteur_value],
+        ['PROSPECT:', prospect_value, '', '']
     ]
     
     ref_table = Table(ref_table_data, colWidths=[3*cm, 5*cm, 3*cm, 5*cm])
@@ -1130,6 +1137,9 @@ def generer_pdf_proposition(data_frame: pd.DataFrame, options_data: List[Dict], 
             table_style.add('TEXTCOLOR', (0, row_idx), (-1, row_idx), colors.whitesmoke)
             table_style.add('FONTNAME', (0, row_idx), (-1, row_idx), 'Helvetica-Bold')
             table_style.add('FONTSIZE', (0, row_idx), (-1, row_idx), 10)
+            # Fusionner les cellules de la colonne 1 à la dernière colonne
+            if nb_options > 1:
+                table_style.add('SPAN', (1, row_idx), (-1, row_idx))
     
     table.setStyle(table_style)
     elements.append(table)
@@ -1369,6 +1379,20 @@ def generer_recapitulatif_particulier(resultats_multi: Dict[int, Dict], baremes_
     nb_options = len(options_data)
     df_dict = {'Désignation': designations}
     
+    # Calculer la somme totale de toutes les PRIME TTC ANNUELLE
+    def extract_numeric(value_str):
+        """Extrait la valeur numérique d'une chaîne formatée (ex: '1 500 000 FCFA')"""
+        if not value_str or value_str == 'N/A':
+            return 0
+        cleaned = str(value_str).replace(' ', '').replace('FCFA', '').replace(',', '.')
+        try:
+            return float(cleaned)
+        except:
+            return 0
+    
+    somme_primes_ttc = sum(extract_numeric(opt.get('prime_ttc_annuelle', '0')) for opt in options_data)
+    montant_total_global = format_currency(somme_primes_ttc)
+    
     for i in range(nb_options):
         option_values = [
             options_data[i]['plafond_annuel_pers'],
@@ -1387,7 +1411,7 @@ def generer_recapitulatif_particulier(resultats_multi: Dict[int, Dict], baremes_
             options_data[i]['accessoires'], 
             options_data[i]['taxes'], 
             options_data[i]['prime_ttc_annuelle'],
-            options_data[i]['montant_total']
+            montant_total_global  # Somme de toutes les PRIME TTC ANNUELLE
         ]
         df_dict[f'OPTION {i+1}'] = option_values
     
@@ -1483,14 +1507,15 @@ def generer_recapitulatif_particulier(resultats_multi: Dict[int, Dict], baremes_
 # FONCTION DE GÉNÉRATION RÉCAPITULATIF CORPORATE
 # ==============================================================================
 
-def generer_recapitulatif_corporate(resultats: Dict, nom_entreprise: str = "", type_colonnes: str = "college"):
+def generer_recapitulatif_corporate(resultats: Dict, nom_entreprise: str = "", apporteur: str = "", type_colonnes: str = "college"):
     """
     Génère un récapitulatif PDF pour le parcours Corporate.
     Utilise le même format que le Particulier.
     
     Args:
         resultats: Dict avec les formules et totaux
-        nom_entreprise: Nom de l'entreprise
+        nom_entreprise: Nom de l'entreprise (Prospect)
+        apporteur: Nom de l'apporteur d'affaires
         type_colonnes: "unique" (1 formule), "college" (plusieurs formules/collèges)
     """
     from datetime import datetime
@@ -1594,6 +1619,20 @@ def generer_recapitulatif_corporate(resultats: Dict, nom_entreprise: str = "", t
     
     df_dict = {'Désignation': designations}
     
+    # Calculer la somme totale de toutes les PRIME TTC ANNUELLE
+    def extract_numeric_corp(value_str):
+        """Extrait la valeur numérique d'une chaîne formatée"""
+        if not value_str or value_str == 'N/A':
+            return 0
+        cleaned = str(value_str).replace(' ', '').replace('FCFA', '').replace(',', '.')
+        try:
+            return float(cleaned)
+        except:
+            return 0
+    
+    somme_primes_ttc_corp = sum(extract_numeric_corp(opt.get('prime_ttc_annuelle', '0')) for opt in options_data)
+    montant_total_global_corp = format_currency(somme_primes_ttc_corp)
+    
     for i in range(nb_options):
         option_values = [
             options_data[i]['plafond_annuel_pers'],
@@ -1614,14 +1653,14 @@ def generer_recapitulatif_corporate(resultats: Dict, nom_entreprise: str = "", t
             options_data[i]['accessoires'],
             options_data[i]['taxes'],
             options_data[i]['prime_ttc_annuelle'],
-            options_data[i]['montant_total']
+            montant_total_global_corp  # Somme de toutes les PRIME TTC ANNUELLE
         ]
         df_dict[f'OPTION {i+1}'] = option_values
     
     data_frame = pd.DataFrame(df_dict)
     
-    # Stocker le principal_data avec le nom de l'entreprise
-    st.session_state['principal_data_corp'] = {'prospect': nom_entreprise, 'type': 'Corporate'}
+    # Stocker le principal_data avec le nom de l'entreprise et l'apporteur
+    st.session_state['principal_data_corp'] = {'prospect': nom_entreprise, 'apporteur': apporteur, 'type': 'Corporate'}
     st.session_state['pdf_options_data_corp'] = options_data
     st.session_state['pdf_type_colonnes_corp'] = type_colonnes
     
@@ -1682,7 +1721,7 @@ def generer_recapitulatif_corporate(resultats: Dict, nom_entreprise: str = "", t
                             duree_contrat=resultats.get('duree_contrat', 12),
                             reduction_commerciale=resultats.get('reduction_commerciale', 0),
                             pdf_options_data=options_data,
-                            pdf_principal_data={'prospect': nom_entreprise, 'type': 'Corporate'},
+                            pdf_principal_data={'prospect': nom_entreprise, 'apporteur': apporteur, 'type': 'Corporate'},
                             pdf_bytes=pdf_bytes
                         )
                         
@@ -4514,17 +4553,25 @@ with tab_cotation:
                     st.markdown("---")
                     st.markdown("### 📄 Proposition Commerciale")
                     
-                    nom_entreprise_rapide = st.text_input(
-                        "Nom de l'entreprise (pour le PDF)",
-                        placeholder="Ex: ENTREPRISE XYZ",
-                        key="nom_entreprise_rapide_pdf"
-                    )
+                    col_ent_pdf, col_app_pdf = st.columns(2)
+                    with col_ent_pdf:
+                        nom_entreprise_rapide = st.text_input(
+                            "Nom de l'entreprise (Prospect)",
+                            placeholder="Ex: ENTREPRISE XYZ",
+                            key="nom_entreprise_rapide_pdf"
+                        )
+                    with col_app_pdf:
+                        apporteur_corp_rapide = st.text_input(
+                            "Apporteur",
+                            placeholder="Ex: NOM APPORTEUR",
+                            key="apporteur_corp_rapide_pdf"
+                        )
                     
                     col_gen_pdf = st.columns([1, 1, 1])
                     with col_gen_pdf[1]:
                         if st.button("📝 GÉNÉRER LA PROPOSITION PDF", key="btn_gen_pdf_corp_rapide", type="secondary", use_container_width=True):
                             type_col = "unique" if len(resultats['formules']) == 1 else "college"
-                            generer_recapitulatif_corporate(resultats, nom_entreprise_rapide, type_colonnes=type_col)
+                            generer_recapitulatif_corporate(resultats, nom_entreprise_rapide, apporteur=apporteur_corp_rapide, type_colonnes=type_col)
                     
                     # Afficher les boutons si la proposition a déjà été générée
                     if st.session_state.get('proposition_generee_corp') and st.session_state.get('pdf_bytes_generated_corp'):
@@ -4573,7 +4620,7 @@ with tab_cotation:
                                                 duree_contrat=resultats.get('duree_contrat', 12),
                                                 reduction_commerciale=resultats.get('reduction_commerciale', 0),
                                                 pdf_options_data=st.session_state.get('pdf_options_data_corp', []),
-                                                pdf_principal_data={'prospect': nom_entreprise_rapide, 'type': 'Corporate'},
+                                                pdf_principal_data={'prospect': nom_entreprise_rapide, 'apporteur': apporteur_corp_rapide, 'type': 'Corporate'},
                                                 pdf_bytes=pdf_bytes_corp
                                             )
                                             
@@ -4777,8 +4824,11 @@ with tab_cotation:
                         st.markdown("**Informations Entreprise**")
                         col_ent1, col_ent2 = st.columns(2)
                         
-                        nom_entreprise = col_ent1.text_input("Nom de l'Entreprise", key="nom_ent")
-                        secteur = col_ent2.text_input("Secteur d'Activité", key="secteur_ent")
+                        nom_entreprise = col_ent1.text_input("Nom de l'Entreprise (Prospect)", key="nom_ent")
+                        apporteur_excel = col_ent2.text_input("Apporteur", key="apporteur_excel")
+                        
+                        col_ent3, col_ent4 = st.columns(2)
+                        secteur = col_ent3.text_input("Secteur d'Activité", key="secteur_ent")
                     
                     # Ajustement commercial final
                     with st.container(border=True):
@@ -5007,7 +5057,7 @@ with tab_cotation:
                                         'prime_ttc_finale': prime_finale_display,
                                         'duree_contrat': duree_contrat_excel
                                     }
-                                    generer_recapitulatif_corporate(resultats_excel, nom_entreprise, type_colonnes="unique")
+                                    generer_recapitulatif_corporate(resultats_excel, nom_entreprise, apporteur=apporteur_excel, type_colonnes="unique")
                             
                             # Afficher les boutons si la proposition a déjà été générée
                             if st.session_state.get('proposition_generee_corp') and st.session_state.get('pdf_bytes_generated_corp'):
@@ -5054,7 +5104,7 @@ with tab_cotation:
                                                     duree_contrat=duree_contrat_excel,
                                                     reduction_commerciale=reduction_finale,
                                                     pdf_options_data=st.session_state.get('pdf_options_data_corp', []),
-                                                    pdf_principal_data={'prospect': nom_entreprise, 'type': 'Corporate'},
+                                                    pdf_principal_data={'prospect': nom_entreprise, 'apporteur': apporteur_excel, 'type': 'Corporate'},
                                                     pdf_bytes=pdf_bytes_corp
                                                 )
                                                 
