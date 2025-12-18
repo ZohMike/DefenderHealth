@@ -1067,6 +1067,12 @@ def generer_pdf_proposition(data_frame: pd.DataFrame, options_data: List[Dict], 
     valeurs_nulles = ['N/A', '0', '0 FCFA', 'N/A', '', 'nan', 'None', '0,00', '0.00']
     
     for idx, row in data_frame.iterrows():
+        designation = str(row['Désignation'])
+        
+        # Pour les collèges, ne pas afficher la ligne "MONTANT TOTAL À PAYER"
+        if type_colonnes == "college" and designation == 'MONTANT TOTAL À PAYER':
+            continue
+        
         # Vérifier si toutes les valeurs (sauf désignation) sont nulles
         toutes_nulles = True
         for i in range(nb_options):
@@ -1081,7 +1087,7 @@ def generer_pdf_proposition(data_frame: pd.DataFrame, options_data: List[Dict], 
         if toutes_nulles:
             continue
         
-        row_data = [str(row['Désignation'])]
+        row_data = [designation]
         for i in range(nb_options):
             col_name = f'OPTION {i+1}'  # Le DataFrame utilise toujours OPTION, seul l'affichage change
             if col_name in row:
@@ -1223,9 +1229,9 @@ def generer_recapitulatif_particulier(resultats_multi: Dict[int, Dict], baremes_
     # Récupérer les configurations et infos principales
     configurations_baremes = st.session_state.get('configurations_baremes', {})
     principal_data = st.session_state.get('principal_data', {})
-    # Récupérer le trop perçu (multi ou single)
-    trop_percu_multi = st.session_state.get('trop_percu_part_multi', 0.0)
-    trop_percu_single = st.session_state.get('trop_percu_single', 0.0)
+    # Récupérer le trop perçu (multi ou single) - montant_input stocke dans {key}_value
+    trop_percu_multi = st.session_state.get('trop_percu_part_multi_value', 0.0)
+    trop_percu_single = st.session_state.get('trop_percu_part_single_value', 0.0)
     trop_percu = trop_percu_multi if trop_percu_multi > 0 else trop_percu_single
     
     # === REGROUPEMENT INTELLIGENT ===
@@ -3674,7 +3680,6 @@ with tab_cotation:
                         st.markdown("---")
                         if st.button("📝 GÉNÉRER PROPOSITION COMMERCIALE", key="btn_generer_prop_simple", type="secondary"):
                             st.session_state['proposition_generee'] = True
-                            st.session_state['trop_percu_single'] = trop_percu_single
                             generer_recapitulatif_particulier(resultats_multi, baremes_affiches, type_colonnes="unique")
                         
                         # Afficher les boutons si la proposition a déjà été générée (persistence)
