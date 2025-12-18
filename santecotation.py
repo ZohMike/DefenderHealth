@@ -44,7 +44,22 @@ st.set_page_config(
 )
 
 # --- INITIALISATION DES VARIABLES SESSION_STATE ---
-# Initialiser toutes les variables nécessaires dès le début
+# Fonction de réinitialisation complète
+def reinitialiser_cotation():
+    """Réinitialise toutes les variables liées aux cotations."""
+    keys_to_reset = [
+        'baremes_selectionnes_list', 'resultats_part_multi', 'configurations_baremes',
+        'principal_data', 'trop_percu_part_multi', 'trop_percu_single',
+        'pdf_bytes_generated', 'proposition_generee', 'pdf_options_data', 'pdf_principal_data',
+        'pdf_bytes_generated_corp', 'proposition_generee_corp', 'pdf_options_data_corp',
+        'resultats_multi_formules', 'formules_config', 'resultat_corp_excel', 'df_corporate',
+        'bareme_image_bytes', 'principal_data_corp', 'pdf_type_colonnes', 'pdf_type_colonnes_corp'
+    ]
+    for key in keys_to_reset:
+        if key in st.session_state:
+            del st.session_state[key]
+
+# Initialisation des variables par défaut (si non existantes)
 if 'baremes_selectionnes_list' not in st.session_state:
     st.session_state.baremes_selectionnes_list = []
 if 'resultats_part_multi' not in st.session_state:
@@ -978,7 +993,24 @@ def generer_pdf_proposition(data_frame: pd.DataFrame, options_data: List[Dict], 
         table_data.append(['Désignation'] + col_labels[:3])
         col_widths = [5*cm, 4*cm, 4*cm, 4*cm]
     
+    # Liste des valeurs considérées comme nulles/vides
+    valeurs_nulles = ['N/A', '0', '0 FCFA', 'N/A', '', 'nan', 'None', '0,00', '0.00']
+    
     for idx, row in data_frame.iterrows():
+        # Vérifier si toutes les valeurs (sauf désignation) sont nulles
+        toutes_nulles = True
+        for i in range(nb_options):
+            col_name = f'OPTION {i+1}'
+            if col_name in row:
+                cell_value = str(row[col_name]).strip()
+                if cell_value not in valeurs_nulles:
+                    toutes_nulles = False
+                    break
+        
+        # Si toutes les valeurs sont nulles, ne pas ajouter cette ligne
+        if toutes_nulles:
+            continue
+        
         row_data = [str(row['Désignation'])]
         for i in range(nb_options):
             col_name = f'OPTION {i+1}'  # Le DataFrame utilise toujours OPTION, seul l'affichage change
@@ -1013,19 +1045,24 @@ def generer_pdf_proposition(data_frame: pd.DataFrame, options_data: List[Dict], 
         ('ROWBACKGROUNDS', (1, 1), (-1, -1), [colors.white, colors.HexColor('#f8f8f8')]),
     ])
     
-    for idx, row in data_frame.iterrows():
-        row_idx = idx + 1
+    # Appliquer les styles spéciaux basés sur table_data (lignes filtrées)
+    for row_idx, row_data in enumerate(table_data):
+        if row_idx == 0:  # Skip header
+            continue
         
-        if row['Désignation'] in ['PRIME NETTE / PERSONNE', 'PRIME NETTE TOTALE']:
+        # La première colonne contient la désignation
+        designation = str(row_data[0]) if isinstance(row_data[0], str) else str(row_data[0])
+        
+        if designation in ['PRIME NETTE / PERSONNE', 'PRIME NETTE TOTALE']:
             table_style.add('BACKGROUND', (0, row_idx), (-1, row_idx), colors.HexColor('#f2e8d9'))
             table_style.add('FONTNAME', (0, row_idx), (-1, row_idx), 'Helvetica-Bold')
         
-        if row['Désignation'] == 'PRIME TTC ANNUELLE':
+        if designation == 'PRIME TTC ANNUELLE':
             table_style.add('BACKGROUND', (0, row_idx), (-1, row_idx), colors.HexColor('#754015'))
             table_style.add('TEXTCOLOR', (0, row_idx), (-1, row_idx), colors.whitesmoke)
             table_style.add('FONTNAME', (0, row_idx), (-1, row_idx), 'Helvetica-Bold')
         
-        if row['Désignation'] == 'MONTANT TOTAL À PAYER':
+        if designation == 'MONTANT TOTAL À PAYER':
             table_style.add('BACKGROUND', (0, row_idx), (-1, row_idx), colors.HexColor('#145d33'))
             table_style.add('TEXTCOLOR', (0, row_idx), (-1, row_idx), colors.whitesmoke)
             table_style.add('FONTNAME', (0, row_idx), (-1, row_idx), 'Helvetica-Bold')
@@ -2176,6 +2213,13 @@ with tab_cotation:
     # --- PARCOURS PARTICULIER ---
     with tab_particulier:
         
+        # Bouton de réinitialisation
+        col_reset1, col_reset2 = st.columns([6, 1])
+        with col_reset2:
+            if st.button("🔄 Nouvelle", key="btn_reset_particulier", help="Réinitialiser le formulaire"):
+                reinitialiser_cotation()
+                st.rerun()
+        
         # === STYLES DES SECTIONS ===
         st.markdown("""
         <style>
@@ -3277,7 +3321,7 @@ with tab_cotation:
             # Champ Accessoire + (frais supplémentaires)
             with st.container(border=True):
                 accessoire_plus = st.number_input(
-                    "Trop perçu + (FCFA)",
+                    "Accessoire + (FCFA)",
                     min_value=0.0,
                     value=0.0,
                     step=1000.0,
@@ -3968,6 +4012,13 @@ with tab_cotation:
     # --- PARCOURS CORPORATE ---
     with tab_corporate:
         
+        # Bouton de réinitialisation
+        col_reset_c1, col_reset_c2 = st.columns([6, 1])
+        with col_reset_c2:
+            if st.button("🔄 Nouvelle", key="btn_reset_corporate", help="Réinitialiser le formulaire"):
+                reinitialiser_cotation()
+                st.rerun()
+        
         # Choix de la méthode de tarification
         st.markdown("<h3 style='color: #6A0DAD;'>Choix de la Méthode de Tarification</h3>", unsafe_allow_html=True)
         
@@ -4226,7 +4277,7 @@ with tab_cotation:
                     
                     # Champ Accessoire + (frais supplémentaires)
                     accessoire_plus_corp = st.number_input(
-                        "Trop perçu + (FCFA)",
+                        "Accessoire + (FCFA)",
                         min_value=0.0,
                         value=0.0,
                         step=1000.0,
