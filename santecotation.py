@@ -223,6 +223,69 @@ st.markdown("""
 
 # --- 2. FONCTIONS D'AFFICHAGE ET UTILITAIRES ---
 
+def afficher_montant_formate(montant: float, label: str = "") -> str:
+    """Retourne le montant formaté avec séparateurs de milliers."""
+    if montant == 0:
+        return ""
+    formatted = f"{int(montant):,}".replace(',', ' ')
+    return f"💰 {formatted} FCFA" if label == "" else f"{label}: {formatted} FCFA"
+
+def montant_input(label: str, key: str, value: float = 0.0, step: float = 1000.0, help: str = "", min_value: float = 0.0):
+    """
+    Champ de saisie de montant avec séparateurs de milliers.
+    Utilise st.text_input avec formatage automatique.
+    """
+    import re
+    
+    # Clé pour stocker la valeur numérique
+    value_key = f"{key}_value"
+    
+    # Initialiser la valeur si nécessaire
+    if value_key not in st.session_state:
+        st.session_state[value_key] = value
+    
+    # Formatter la valeur actuelle pour l'affichage
+    current_value = st.session_state[value_key]
+    if current_value > 0:
+        display_value = f"{int(current_value):,}".replace(',', ' ')
+    else:
+        display_value = ""
+    
+    # Créer le champ texte
+    col_input, col_unit = st.columns([4, 1])
+    
+    with col_input:
+        text_value = st.text_input(
+            label,
+            value=display_value,
+            key=key,
+            help=help,
+            placeholder="0"
+        )
+    
+    with col_unit:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("**FCFA**")
+    
+    # Parser la valeur saisie
+    if text_value:
+        # Supprimer tous les caractères non numériques sauf le point et la virgule
+        cleaned = re.sub(r'[^\d.,]', '', text_value)
+        # Remplacer la virgule par un point pour les décimales
+        cleaned = cleaned.replace(',', '.')
+        try:
+            numeric_value = float(cleaned)
+            if numeric_value >= min_value:
+                st.session_state[value_key] = numeric_value
+            else:
+                st.session_state[value_key] = min_value
+        except ValueError:
+            pass  # Garder la valeur précédente si parsing échoue
+    else:
+        st.session_state[value_key] = 0.0
+    
+    return st.session_state[value_key]
+
 def calculer_prime_particuliers(
     produit_key: str, 
     type_couverture: str, 
@@ -788,8 +851,8 @@ def generer_pdf_proposition(data_frame: pd.DataFrame, options_data: List[Dict], 
     # En-tête avec références
     ref_data = st.session_state.get('principal_data', {})
     ref_table_data = [
-        ['REFERENCE:', ref_data.get('reference', 'LWA-00082-10-0735'), 'APPORTEUR:', ref_data.get('apporteur', 'ZOH BI')],
-        ['PROSPECT:', ref_data.get('prospect', 'SOCIETE AKORA'), '', '']
+        ['REFERENCE:', ref_data.get('reference', ''), 'APPORTEUR:', ref_data.get('apporteur', '')],
+        ['PROSPECT:', ref_data.get('prospect', ''), '', '']
     ]
     
     ref_table = Table(ref_table_data, colWidths=[3*cm, 5*cm, 3*cm, 5*cm])
@@ -1361,7 +1424,7 @@ def generer_recapitulatif_particulier(resultats_multi: Dict[int, Dict], baremes_
     
     with col_dl:
         st.download_button(
-            label="📥 TÉLÉCHARGER LA PROPOSITION (PDF)",
+            label="📥 TÉLÉCHARGER",
             data=pdf_bytes,
             file_name=f"Proposition_Sante_Particulier_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
             mime="application/pdf",
@@ -1371,59 +1434,49 @@ def generer_recapitulatif_particulier(resultats_multi: Dict[int, Dict], baremes_
     
     with col_save:
         if st.session_state.db_manager is not None:
-            if st.button("💾 ENREGISTRER AVEC PDF", type="secondary", use_container_width=True, key="btn_save_with_pdf"):
-                # Récupérer le PDF depuis session_state (car pdf_bytes n'existe plus après rerun)
+            if st.button("💾 ENREGISTRER LA COTATION", type="primary", use_container_width=True, key="btn_save_with_pdf"):
+                # Récupérer le PDF depuis session_state
                 pdf_bytes_to_save = st.session_state.get('pdf_bytes_generated')
                 saved_options_data = st.session_state.get('pdf_options_data')
                 saved_principal_data = st.session_state.get('pdf_principal_data')
-                if not pdf_bytes_to_save:
-                    st.error("❌ Aucun PDF généré. Cliquez d'abord sur 'GÉNÉRER PROPOSITION COMMERCIALE'.")
-                else:
-                    try:
-                        nb_saved = 0
-                        errors = []
+                
+                try:
+                    nb_saved = 0
+                    
+                    for idx in range(len(baremes_affiches)):
+                        bareme_key = baremes_affiches[idx]
+                        resultat = resultats_multi[idx]['resultat']
+                        config = configurations_baremes.get(idx, {})
                         
-                        for idx in range(len(baremes_affiches)):
-                            bareme_key = baremes_affiches[idx]
-                            resultat = resultats_multi[idx]['resultat']
-                            config = configurations_baremes.get(idx, {})
-                            
-                            client_info = {
-                                'nom': saved_principal_data.get('prospect', '') if saved_principal_data else '',
-                                'prenom': '',
-                                'type_couverture': config.get('type_couverture', 'Personne seule'),
-                                'nb_adultes': 2 if config.get('type_couverture') == 'Famille' else 1,
-                                'nb_enfants': 3 + config.get('enfants_supp', 0) if config.get('type_couverture') == 'Famille' else 0
-                            }
-                            
-                            success = sauvegarder_cotation_supabase(
-                                type_marche="Particulier",
-                                produit=PRODUITS_PARTICULIERS_UI[bareme_key],
-                                resultat=resultat,
-                                client_info=client_info,
-                                duree_contrat=resultat.get('facteurs', {}).get('duree_contrat', 12),
-                                reduction_commerciale=resultat.get('facteurs', {}).get('reduction', 0),
-                                pdf_options_data=saved_options_data,
-                                pdf_principal_data=saved_principal_data,
-                                pdf_bytes=pdf_bytes_to_save
-                            )
-                            
-                            if success:
-                                nb_saved += 1
-                            else:
-                                errors.append(PRODUITS_PARTICULIERS_UI[bareme_key])
+                        client_info = {
+                            'nom': saved_principal_data.get('prospect', '') if saved_principal_data else '',
+                            'prenom': '',
+                            'type_couverture': config.get('type_couverture', 'Personne seule'),
+                            'nb_adultes': 2 if config.get('type_couverture') == 'Famille' else 1,
+                            'nb_enfants': 3 + config.get('enfants_supp', 0) if config.get('type_couverture') == 'Famille' else 0
+                        }
                         
-                        if nb_saved > 0:
-                            st.balloons()
-                            st.success(f"✅ {nb_saved} cotation(s) enregistrée(s) avec le PDF !")
+                        success = sauvegarder_cotation_supabase(
+                            type_marche="Particulier",
+                            produit=PRODUITS_PARTICULIERS_UI[bareme_key],
+                            resultat=resultat,
+                            client_info=client_info,
+                            duree_contrat=resultat.get('facteurs', {}).get('duree_contrat', 12),
+                            reduction_commerciale=resultat.get('facteurs', {}).get('reduction', 0),
+                            pdf_options_data=saved_options_data,
+                            pdf_principal_data=saved_principal_data,
+                            pdf_bytes=pdf_bytes_to_save
+                        )
                         
-                        if errors:
-                            st.error(f"❌ Échec pour: {', '.join(errors)}")
-                            
-                    except Exception as e:
-                        st.error(f"❌ Erreur: {str(e)}")
-                        import traceback
-                        st.code(traceback.format_exc())
+                        if success:
+                            nb_saved += 1
+                    
+                    if nb_saved > 0:
+                        st.balloons()
+                        st.success(f"✅ {nb_saved} cotation(s) enregistrée(s) !")
+                        
+                except Exception as e:
+                    st.error(f"❌ Erreur: {str(e)}")
 
 
 # ==============================================================================
@@ -1591,7 +1644,7 @@ def generer_recapitulatif_corporate(resultats: Dict, nom_entreprise: str = "", t
     
     with col_dl:
         st.download_button(
-            label="📥 TÉLÉCHARGER LA PROPOSITION (PDF)",
+            label="📥 TÉLÉCHARGER",
             data=pdf_bytes,
             file_name=f"Proposition_Corporate_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
             mime="application/pdf",
@@ -1602,12 +1655,8 @@ def generer_recapitulatif_corporate(resultats: Dict, nom_entreprise: str = "", t
     
     with col_save:
         if st.session_state.db_manager is not None:
-            if st.button("💾 ENREGISTRER AVEC PDF", type="secondary", use_container_width=True, key="btn_save_corp_pdf"):
+            if st.button("💾 ENREGISTRER LA COTATION", type="primary", use_container_width=True, key="btn_save_corp_pdf"):
                 try:
-                    import base64
-                    pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
-                    
-                    # Sauvegarder pour chaque formule
                     nb_saved = 0
                     for formule in formules:
                         client_info = {
@@ -1642,12 +1691,12 @@ def generer_recapitulatif_corporate(resultats: Dict, nom_entreprise: str = "", t
                     
                     if nb_saved > 0:
                         st.balloons()
-                        st.success(f"✅ {nb_saved} cotation(s) Corporate enregistrée(s) avec le PDF !")
+                        st.success(f"✅ {nb_saved} cotation(s) enregistrée(s) !")
                         
                 except Exception as e:
                     st.error(f"❌ Erreur: {str(e)}")
         else:
-            st.warning("⚠️ Base de données non disponible")
+            st.warning("⚠️ Connexion Supabase non disponible")
 
 
 # --- 3. INTERFACE STREAMLIT ---
@@ -1938,7 +1987,7 @@ with tab_cotation:
         if st.session_state.db_manager is not None:
             try:
                 devis_list = st.session_state.db_manager.recuperer_devis(limit=100)
-                devis_bruts = devis_list  # Garder les données brutes
+                devis_bruts = devis_list
                 
                 for devis in devis_list:
                     date_creation = devis.get('date_creation', '')
@@ -1964,7 +2013,6 @@ with tab_cotation:
                         "Prime TTC": f"{int(prime_finale):,} FCFA".replace(',', ' '),
                         "Créé le": date_str,
                         "Statut": devis.get('statut', 'En attente'),
-                        # Données brutes pour PDF
                         "_prime_nette": prime_nette,
                         "_prime_finale": prime_finale,
                         "_accessoires": devis.get('accessoires', 0) or 0,
@@ -1973,9 +2021,8 @@ with tab_cotation:
                         "_type_couverture": devis.get('type_couverture', ''),
                         "_duree": devis.get('duree_contrat', 12),
                         "_details": devis.get('details', {}),
-                        "_pdf_data": devis.get('pdf_data')  # PDF stocké en base64
+                        "_pdf_data": devis.get('pdf_data')
                     })
-                    
             except Exception as e:
                 st.error(f"❌ Erreur lors du chargement : {str(e)}")
         else:
@@ -2249,7 +2296,7 @@ with tab_cotation:
                 )
                 prospect = st.text_input(
                     "Prospect / Société",
-                    value=st.session_state.get('prospect_cotation', 'SOCIETE AKORA'),
+                    value=st.session_state.get('prospect_cotation', ''),
                     key="prospect_cotation",
                     help="Nom du prospect ou de la société"
                 )
@@ -2257,7 +2304,7 @@ with tab_cotation:
             with col_ref2:
                 apporteur = st.text_input(
                     "Apporteur",
-                    value=st.session_state.get('apporteur_cotation', 'ZOH BI'),
+                    value=st.session_state.get('apporteur_cotation', ''),
                     key="apporteur_cotation",
                     help="Nom de l'apporteur d'affaires"
                 )
@@ -3201,21 +3248,21 @@ with tab_cotation:
                         st.markdown("**Informations de Garantie**")
                         col_plaf1, col_plaf2, col_taux = st.columns(3)
                         
-                        plafond_personne = col_plaf1.number_input(
-                            "Plafond par Personne (FCFA)",
-                            min_value=0.0,
+                        with col_plaf1:
+                            plafond_personne = montant_input(
+                                "Plafond par Personne",
+                                key=f"plafond_personne_{bareme_key}",
                             value=st.session_state.baremes_speciaux_info.get(bareme_key, {}).get('plafond_personne', 0.0),
                             step=100000.0,
-                            key=f"plafond_personne_{bareme_key}",
                             help="Plafond annuel par personne"
                         )
                         
-                        plafond_famille = col_plaf2.number_input(
-                            "Plafond par Famille (FCFA)",
-                            min_value=0.0,
+                        with col_plaf2:
+                            plafond_famille = montant_input(
+                                "Plafond par Famille",
+                                key=f"plafond_famille_{bareme_key}",
                             value=st.session_state.baremes_speciaux_info.get(bareme_key, {}).get('plafond_famille', 0.0),
                             step=100000.0,
-                            key=f"plafond_famille_{bareme_key}",
                             help="Plafond annuel par famille"
                         )
                         
@@ -3232,21 +3279,21 @@ with tab_cotation:
                         st.markdown("**Montants de Prime**")
                         col_man1, col_man2 = st.columns(2)
                         
-                        prime_manuelle = col_man1.number_input(
-                            "Prime Nette (FCFA)",
-                            min_value=0.0,
+                        with col_man1:
+                            prime_manuelle = montant_input(
+                                "Prime Nette",
+                                key=f"prime_nette_manuel_{bareme_key}",
                             value=0.0,
                             step=1000.0,
-                            key=f"prime_nette_manuel_{bareme_key}",
                             help="Saisissez la prime nette calculée"
                         )
                         
-                        accessoire_manuel = col_man2.number_input(
-                            "Accessoires (FCFA)",
-                            min_value=0.0,
+                        with col_man2:
+                            accessoire_manuel = montant_input(
+                                "Accessoires",
+                                key=f"accessoires_manuel_{bareme_key}",
                             value=10000.0,
                             step=1000.0,
-                            key=f"accessoires_manuel_{bareme_key}",
                             help="Frais accessoires"
                         )
                         
@@ -3320,19 +3367,13 @@ with tab_cotation:
             
             # Champ Accessoire + (frais supplémentaires)
             with st.container(border=True):
-                accessoire_plus = st.number_input(
-                    "Accessoire + (FCFA)",
-                    min_value=0.0,
+                accessoire_plus = montant_input(
+                    "Accessoire + (frais supplémentaires)",
+                    key="accessoire_plus_part",
                     value=0.0,
                     step=1000.0,
-                    format="%.0f",
-                    key="accessoire_plus_part",
-                    help="Frais accessoires supplémentaires à ajouter au calcul (ex: frais de dossier, frais administratifs)",
-                    on_change=reset_results
+                    help="Frais accessoires supplémentaires à ajouter au calcul (ex: frais de dossier, frais administratifs)"
                 )
-                
-                if accessoire_plus > 0:
-                    st.info(f"ℹ️ Accessoire supplémentaire de {format_currency(accessoire_plus)} sera ajouté au calcul.")
                 
                 # Bouton vert avec CSS personnalisé
                 st.markdown("""
@@ -3566,19 +3607,14 @@ with tab_cotation:
                         # Champ Trop perçu
                         st.markdown("---")
                         st.markdown("### 💰 Trop Perçu (Optionnel)")
-                        col_tp1, col_tp2 = st.columns([3, 1])
                         
-                        trop_percu_single = col_tp1.number_input(
-                            "Montant du trop perçu (FCFA)",
-                            min_value=0.0,
+                        trop_percu_single = montant_input(
+                            "Montant du trop perçu",
+                            key="trop_percu_part_single",
                             value=0.0,
                             step=1000.0,
-                            key="trop_percu_part_single",
                             help="Ce montant sera ajouté aux accessoires"
                         )
-                        
-                        if trop_percu_single > 0:
-                            col_tp2.metric("Ajouté aux accessoires", f"{int(trop_percu_single):,} FCFA".replace(',', ' '))
                         
                         # Upload image du barème
                         st.markdown("---")
@@ -3609,7 +3645,7 @@ with tab_cotation:
                             
                             with col_dl2:
                                 st.download_button(
-                                    label="📥 TÉLÉCHARGER LE PDF",
+                                    label="📥 TÉLÉCHARGER",
                                     data=st.session_state['pdf_bytes_generated'],
                                     file_name=f"Proposition_Sante_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
                                     mime="application/pdf",
@@ -3619,15 +3655,15 @@ with tab_cotation:
                                 )
                             
                             with col_save2:
-                                if st.button("💾 ENREGISTRER AVEC PDF", type="secondary", use_container_width=True, key="btn_save_persist"):
-                                    pdf_bytes_to_save = st.session_state.get('pdf_bytes_generated')
-                                    saved_options_data = st.session_state.get('pdf_options_data')
-                                    saved_principal_data = st.session_state.get('pdf_principal_data')
-                                    saved_resultats = st.session_state.get('resultats_multi_saved', resultats_multi)
-                                    saved_baremes = st.session_state.get('baremes_affiches_saved', baremes_affiches)
-                                    configs_baremes = st.session_state.get('configurations_baremes', {})
-                                    
-                                    if pdf_bytes_to_save:
+                                if st.session_state.db_manager is not None:
+                                    if st.button("💾 ENREGISTRER LA COTATION", type="primary", use_container_width=True, key="btn_save_persist"):
+                                        pdf_bytes_to_save = st.session_state.get('pdf_bytes_generated')
+                                        saved_options_data = st.session_state.get('pdf_options_data')
+                                        saved_principal_data = st.session_state.get('pdf_principal_data')
+                                        saved_resultats = st.session_state.get('resultats_multi_saved', resultats_multi)
+                                        saved_baremes = st.session_state.get('baremes_affiches_saved', baremes_affiches)
+                                        configs_baremes = st.session_state.get('configurations_baremes', {})
+                                        
                                         try:
                                             for idx in range(len(saved_baremes)):
                                                 bareme_key = saved_baremes[idx]
@@ -3655,43 +3691,11 @@ with tab_cotation:
                                                 )
                                             
                                             st.balloons()
-                                            st.success("✅ Cotation enregistrée avec le PDF !")
-                                            # Réinitialiser l'état
-                                            st.session_state['proposition_generee'] = False
+                                            st.success("✅ Cotation enregistrée !")
                                         except Exception as e:
                                             st.error(f"❌ Erreur: {e}")
-                                    else:
-                                        st.error("❌ Aucun PDF en mémoire")
-                        
-                        # === BOUTON SAUVEGARDE SUPABASE (1 barème) ===
-                        st.markdown("---")
-                        with st.container(border=True):
-                            if st.session_state.db_manager is not None:
-                                if st.button("💾 ENREGISTRER LA COTATION", key="btn_save_supabase_single", type="primary", use_container_width=True):
-                                    principal_data = st.session_state.get('principal_data', {})
-                                    configs_baremes = st.session_state.get('configurations_baremes', {})
-                                    config = configs_baremes.get(0, {})
-                                    
-                                    client_info = {
-                                        'nom': principal_data.get('prospect', ''),
-                                        'prenom': '',
-                                        'type_couverture': config.get('type_couverture', 'Personne seule'),
-                                        'nb_adultes': 2 if config.get('type_couverture') == 'Famille' else 1,
-                                        'nb_enfants': 3 + config.get('enfants_supp', 0) if config.get('type_couverture') == 'Famille' else 0
-                                    }
-                                    
-                                    success = sauvegarder_cotation_supabase(
-                                        type_marche="Particulier",
-                                        produit=PRODUITS_PARTICULIERS_UI[bareme_key],
-                                        resultat=resultat,
-                                        client_info=client_info,
-                                        duree_contrat=resultat.get('facteurs', {}).get('duree_contrat', 12),
-                                        reduction_commerciale=resultat.get('facteurs', {}).get('reduction', 0)
-                                    )
-                                    if success:
-                                        st.balloons()
-                            else:
-                                st.warning("⚠️ Connexion Supabase non disponible.")
+                                else:
+                                    st.warning("⚠️ Connexion Supabase non disponible.")
                     
                     else:
                         # MODE COMPARAISON : Plusieurs propositions séparées
@@ -3921,19 +3925,14 @@ with tab_cotation:
                         
                         # Champ Trop perçu
                         st.markdown("### 💰 Trop Perçu (Optionnel)")
-                        col_tp1, col_tp2 = st.columns([3, 1])
                         
-                        trop_percu = col_tp1.number_input(
-                            "Montant du trop perçu (FCFA)",
-                            min_value=0.0,
+                        trop_percu = montant_input(
+                            "Montant du trop perçu",
+                            key="trop_percu_part_multi",
                             value=0.0,
                             step=1000.0,
-                            key="trop_percu_part_multi",
                             help="Ce montant sera ajouté aux accessoires"
                         )
-                        
-                        if trop_percu > 0:
-                            col_tp2.metric("Ajouté aux accessoires", f"{format_currency(trop_percu)}")
                         
                         st.markdown("---")
                         
@@ -3966,48 +3965,69 @@ with tab_cotation:
                             type_colonnes_pdf = "option"
                         
                         if st.button("📝 GÉNÉRER LA PROPOSITION COMMERCIALE", key="btn_generer_prop", type="secondary", use_container_width=True):
+                            st.session_state['proposition_generee_multi'] = True
                             generer_recapitulatif_particulier(resultats_multi, baremes_affiches, type_colonnes=type_colonnes_pdf)
                         
-                        # === BOUTON SAUVEGARDE SUPABASE ===
-                        st.markdown("---")
-                        with st.container(border=True):
-                            if st.session_state.db_manager is not None:
-                                if st.button("💾 ENREGISTRER LA COTATION", key="btn_save_supabase_part", type="primary", use_container_width=True):
-                                    # Préparer les infos client
-                                    principal_data = st.session_state.get('principal_data', {})
-                                    configs_baremes = st.session_state.get('configurations_baremes', {})
-                                    
-                                    # Sauvegarder chaque barème séparément
-                                    nb_saved = 0
-                                    for idx, bareme_key in enumerate(baremes_affiches):
-                                        resultat = resultats_multi[idx]['resultat']
-                                        config = configs_baremes.get(idx, {})
+                        # === BOUTONS TÉLÉCHARGER ET ENREGISTRER ===
+                        if st.session_state.get('proposition_generee_multi') and st.session_state.get('pdf_bytes_generated'):
+                            st.markdown("---")
+                            col_dl_multi, col_save_multi = st.columns(2)
+                            
+                            with col_dl_multi:
+                                st.download_button(
+                                    label="📥 TÉLÉCHARGER",
+                                    data=st.session_state['pdf_bytes_generated'],
+                                    file_name=f"Proposition_Sante_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                                    mime="application/pdf",
+                                    type="primary",
+                                    use_container_width=True,
+                                    key="dl_btn_multi"
+                                )
+                            
+                            with col_save_multi:
+                                if st.session_state.db_manager is not None:
+                                    if st.button("💾 ENREGISTRER LA COTATION", key="btn_save_supabase_part", type="primary", use_container_width=True):
+                                        # Préparer les infos client
+                                        principal_data = st.session_state.get('principal_data', {})
+                                        configs_baremes = st.session_state.get('configurations_baremes', {})
+                                        pdf_bytes_to_save = st.session_state.get('pdf_bytes_generated')
+                                        saved_options_data = st.session_state.get('pdf_options_data')
+                                        saved_principal_data = st.session_state.get('pdf_principal_data')
                                         
-                                        client_info = {
-                                            'nom': principal_data.get('prospect', ''),
-                                            'prenom': '',
-                                            'entreprise': '',
-                                            'type_couverture': config.get('type_couverture', 'Personne seule'),
-                                            'nb_adultes': 2 if config.get('type_couverture') == 'Famille' else 1,
-                                            'nb_enfants': 3 + config.get('enfants_supp', 0) if config.get('type_couverture') == 'Famille' else 0
-                                        }
+                                        # Sauvegarder chaque barème séparément
+                                        nb_saved = 0
+                                        for idx, bareme_key in enumerate(baremes_affiches):
+                                            resultat = resultats_multi[idx]['resultat']
+                                            config = configs_baremes.get(idx, {})
+                                            
+                                            client_info = {
+                                                'nom': principal_data.get('prospect', ''),
+                                                'prenom': '',
+                                                'entreprise': '',
+                                                'type_couverture': config.get('type_couverture', 'Personne seule'),
+                                                'nb_adultes': 2 if config.get('type_couverture') == 'Famille' else 1,
+                                                'nb_enfants': 3 + config.get('enfants_supp', 0) if config.get('type_couverture') == 'Famille' else 0
+                                            }
+                                            
+                                            success = sauvegarder_cotation_supabase(
+                                                type_marche="Particulier",
+                                                produit=PRODUITS_PARTICULIERS_UI[bareme_key],
+                                                resultat=resultat,
+                                                client_info=client_info,
+                                                duree_contrat=resultat.get('facteurs', {}).get('duree_contrat', 12),
+                                                reduction_commerciale=resultat.get('facteurs', {}).get('reduction', 0),
+                                                pdf_options_data=saved_options_data,
+                                                pdf_principal_data=saved_principal_data,
+                                                pdf_bytes=pdf_bytes_to_save
+                                            )
+                                            if success:
+                                                nb_saved += 1
                                         
-                                        success = sauvegarder_cotation_supabase(
-                                            type_marche="Particulier",
-                                            produit=PRODUITS_PARTICULIERS_UI[bareme_key],
-                                            resultat=resultat,
-                                            client_info=client_info,
-                                            duree_contrat=resultat.get('facteurs', {}).get('duree_contrat', 12),
-                                            reduction_commerciale=resultat.get('facteurs', {}).get('reduction', 0)
-                                        )
-                                        if success:
-                                            nb_saved += 1
-                                    
-                                    if nb_saved > 0:
-                                        st.balloons()
-                                        st.success(f"✅ {nb_saved} cotation(s) enregistrée(s) avec succès !")
-                            else:
-                                st.warning("⚠️ Connexion à la base de données non disponible. Vérifiez la configuration Supabase.")
+                                        if nb_saved > 0:
+                                            st.balloons()
+                                            st.success(f"✅ {nb_saved} cotation(s) enregistrée(s) !")
+                                else:
+                                    st.warning("⚠️ Connexion Supabase non disponible.")
     
     # --- PARCOURS CORPORATE ---
     with tab_corporate:
@@ -4094,23 +4114,23 @@ with tab_cotation:
                         st.markdown("**Plafonds du Barème Spécial**")
                         col_plaf1, col_plaf2 = st.columns(2)
                         
-                        plafond_pers_special = col_plaf1.number_input(
-                            "PLAFOND ANNUEL / PERS (FCFA)",
-                            min_value=0,
-                            value=0,
-                            step=100000,
-                            key=f"plafond_pers_special_{i}",
-                            help="Plafond annuel par personne"
-                        )
+                        with col_plaf1:
+                            plafond_pers_special = montant_input(
+                                "PLAFOND ANNUEL / PERS",
+                                key=f"plafond_pers_special_{i}",
+                                value=0.0,
+                                step=100000.0,
+                                help="Plafond annuel par personne"
+                            )
                         
-                        plafond_fam_special = col_plaf2.number_input(
-                            "PLAFOND ANNUEL / FAM (FCFA)",
-                            min_value=0,
-                            value=0,
-                            step=100000,
-                            key=f"plafond_fam_special_{i}",
-                            help="Plafond annuel par famille"
-                        )
+                        with col_plaf2:
+                            plafond_fam_special = montant_input(
+                                "PLAFOND ANNUEL / FAM",
+                                key=f"plafond_fam_special_{i}",
+                                value=0.0,
+                                step=100000.0,
+                                help="Plafond annuel par famille"
+                            )
                     
                     # Nom de la formule (optionnel)
                     nom_formule = col_form2.text_input(
@@ -4152,41 +4172,41 @@ with tab_cotation:
                             st.markdown("**Saisie Manuelle (Barème Spécial)**")
                             col_man1, col_man2 = st.columns(2)
                             
-                            prime_formule = col_man1.number_input(
-                                "Prime Nette Totale (FCFA)",
-                                min_value=0.0,
+                            with col_man1:
+                                prime_formule = montant_input(
+                                    "Prime Nette Totale",
+                                    key=f"prime_manuel_formule_{i}",
                                 value=0.0,
                                 step=10000.0,
-                                key=f"prime_manuel_formule_{i}",
                                 help="Saisissez la prime nette calculée selon votre barème spécial"
                             )
                             
-                            accessoires_formule = col_man2.number_input(
-                                "Accessoires Totaux (FCFA)",
-                                min_value=0.0,
+                            with col_man2:
+                                accessoires_formule = montant_input(
+                                    "Accessoires Totaux",
+                                    key=f"accessoires_manuel_formule_{i}",
                                 value=10000.0,
                                 step=1000.0,
-                                key=f"accessoires_manuel_formule_{i}",
                                 help="Frais accessoires totaux"
                             )
                             
                             col_man3, col_man4 = st.columns(2)
                             
-                            prime_lsp_formule = col_man3.number_input(
-                                "Prime LSP Totale (FCFA)",
-                                min_value=0.0,
+                            with col_man3:
+                                prime_lsp_formule = montant_input(
+                                    "Prime LSP Totale",
+                                    key=f"prime_lsp_manuel_formule_{i}",
                                 value=20000.0,
                                 step=1000.0,
-                                key=f"prime_lsp_manuel_formule_{i}",
                                 help="Prime Lettre de Sortie Provisoire totale"
                             )
                             
-                            prime_assist_psy_formule = col_man4.number_input(
-                                "Prime Assistance Psy Totale (FCFA)",
-                                min_value=0.0,
+                            with col_man4:
+                                prime_assist_psy_formule = montant_input(
+                                    "Prime Assistance Psy",
+                                    key=f"prime_assist_psy_manuel_formule_{i}",
                                 value=35000.0,
                                 step=1000.0,
-                                key=f"prime_assist_psy_manuel_formule_{i}",
                                 help="Prime d'assistance psychologique totale"
                             )
                             
@@ -4276,18 +4296,13 @@ with tab_cotation:
                     )
                     
                     # Champ Accessoire + (frais supplémentaires)
-                    accessoire_plus_corp = st.number_input(
-                        "Accessoire + (FCFA)",
-                        min_value=0.0,
+                    accessoire_plus_corp = montant_input(
+                        "Accessoire + (frais supplémentaires)",
+                        key="accessoire_plus_corp_rapide",
                         value=0.0,
                         step=1000.0,
-                        format="%.0f",
-                        key="accessoire_plus_corp_rapide",
                         help="Frais accessoires supplémentaires à ajouter au calcul (ex: frais de dossier, frais administratifs)"
                     )
-                    
-                    if accessoire_plus_corp > 0:
-                        st.info(f"ℹ️ Accessoire supplémentaire de {format_currency(accessoire_plus_corp)} sera ajouté au calcul.")
                 
                 # ÉTAPE 4 : Génération de l'estimation
                 st.markdown("---")
@@ -4494,7 +4509,7 @@ with tab_cotation:
                         "⚠️ Cette estimation ne constitue pas une offre ferme. "
                         "Passez au **Workflow Excel** pour obtenir un devis définitif avec micro-tarification."
                     )
-                    
+        
                     # === GÉNÉRATION PDF CORPORATE ===
                     st.markdown("---")
                     st.markdown("### 📄 Proposition Commerciale")
@@ -4518,7 +4533,7 @@ with tab_cotation:
                         
                         with col_dl_corp:
                             st.download_button(
-                                label="📥 TÉLÉCHARGER LE PDF",
+                                label="📥 TÉLÉCHARGER",
                                 data=st.session_state['pdf_bytes_generated_corp'],
                                 file_name=f"Proposition_Corporate_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
                                 mime="application/pdf",
@@ -4529,11 +4544,9 @@ with tab_cotation:
                         
                         with col_save_corp:
                             if st.session_state.db_manager is not None:
-                                if st.button("💾 ENREGISTRER AVEC PDF", type="secondary", use_container_width=True, key="btn_save_corp_persist"):
+                                if st.button("💾 ENREGISTRER LA COTATION", type="primary", use_container_width=True, key="btn_save_corp_persist"):
                                     try:
-                                        import base64
                                         pdf_bytes_corp = st.session_state['pdf_bytes_generated_corp']
-                                        pdf_base64 = base64.b64encode(pdf_bytes_corp).decode('utf-8')
                                         
                                         nb_saved = 0
                                         for formule in resultats['formules']:
@@ -4569,12 +4582,12 @@ with tab_cotation:
                                         
                                         if nb_saved > 0:
                                             st.balloons()
-                                            st.success(f"✅ {nb_saved} cotation(s) Corporate enregistrée(s) avec le PDF !")
+                                            st.success(f"✅ {nb_saved} cotation(s) enregistrée(s) !")
                                             
                                     except Exception as e:
                                         st.error(f"❌ Erreur: {str(e)}")
                             else:
-                                st.warning("⚠️ Base de données non disponible")
+                                st.warning("⚠️ Connexion Supabase non disponible")
         
     
     
@@ -5003,7 +5016,7 @@ with tab_cotation:
                                 
                                 with col_dl_excel:
                                     st.download_button(
-                                        label="📥 TÉLÉCHARGER LE PDF",
+                                        label="📥 TÉLÉCHARGER",
                                         data=st.session_state['pdf_bytes_generated_corp'],
                                         file_name=f"Proposition_Corporate_Excel_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
                                         mime="application/pdf",
@@ -5014,9 +5027,8 @@ with tab_cotation:
                                 
                                 with col_save_excel:
                                     if st.session_state.db_manager is not None:
-                                        if st.button("💾 ENREGISTRER AVEC PDF", type="secondary", use_container_width=True, key="btn_save_corp_excel_persist"):
+                                        if st.button("💾 ENREGISTRER LA COTATION", type="primary", use_container_width=True, key="btn_save_corp_excel_persist"):
                                             try:
-                                                import base64
                                                 pdf_bytes_corp = st.session_state['pdf_bytes_generated_corp']
                                                 
                                                 client_info = {
@@ -5048,9 +5060,9 @@ with tab_cotation:
                                                 
                                                 if success:
                                                     st.balloons()
-                                                    st.success("✅ Cotation Corporate enregistrée avec le PDF !")
+                                                    st.success("✅ Cotation enregistrée !")
                                                     
                                             except Exception as e:
                                                 st.error(f"❌ Erreur: {str(e)}")
                                     else:
-                                        st.warning("⚠️ Base de données non disponible")
+                                        st.warning("⚠️ Connexion Supabase non disponible")
