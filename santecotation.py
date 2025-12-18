@@ -1069,8 +1069,9 @@ def generer_pdf_proposition(data_frame: pd.DataFrame, options_data: List[Dict], 
     for idx, row in data_frame.iterrows():
         designation = str(row['Désignation'])
         
-        # Pour les collèges, ne pas afficher la ligne "MONTANT TOTAL À PAYER"
-        if type_colonnes == "college" and designation == 'MONTANT TOTAL À PAYER':
+        # Pour les options (comparaison), ne pas afficher la ligne "MONTANT TOTAL À PAYER"
+        # Car le client ne paie qu'une seule option, pas la somme
+        if type_colonnes == "option" and designation == 'MONTANT TOTAL À PAYER':
             continue
         
         # Vérifier si toutes les valeurs (sauf désignation) sont nulles
